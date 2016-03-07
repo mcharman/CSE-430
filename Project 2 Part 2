@@ -1,0 +1,114 @@
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+*
+*	Group Members: 		   Mark Harman (mcharman@asu.edu)
+*						   Wesley Springer (wspringe@asu.edu)
+*						   Chandu
+*	Project Description:   CSE 430 Project 2 part 2
+*
+*
+* * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/kthread.h>
+#include <linux/sched.h>
+#include <linux/init.h>
+#include <linux/pid.h>
+#include <linux/list.h>
+#include <linux/kfifo.h>
+#include <linux/signal.h>
+
+static struct task_struct* fb_detector;
+static struct task_struct* fb_killer;
+
+DEFINE_KFIFO(fifo, int, 1024);
+
+static int fb_monitor_thread(void* data)
+{
+	int maxChildCount = 100;
+	int childCount = 0;
+	int pid2kill;
+
+	struct task_struct* process;
+	struct task_struct* processChild;
+	struct list_head* lis;
+
+	printk(KERN_INFO "MONITORING PROCESSES\n");
+	
+	for_each_process(process)
+	{
+		childCount = 0;
+
+		list_for_each(lis, &process->children)
+		{
+			//processChild = list_entry(lis, struct task_struct, sibling);
+			childCount++;
+		}
+
+		if(childCount > maxChildCount && (int)process->pid > 1) // r00t is G0d, 1 is init
+		{
+			printk(KERN_INFO "forkbomb @ PID: %d\n", (int)process->pid);
+			pid2kill = (int)process->pid;
+			kfifo_in(&fifo, &pid2kill, sizeof(pid2kill));
+			list_for_each(lis, &process->children)
+			{
+				processChild = list_entry(lis, struct task_struct, sibling);
+				pid2kill = (int)processChild->pid;
+				kfifo_in(&fifo, &pid2kill, sizeof(pid2kill));
+				printk(KERN_INFO "forkbomb @ PID: %d\n", (int)processChild->pid);
+			}
+		}		
+		
+	}
+	INIT_KFIFO(fifo);
+	
+	return 0;
+
+}
+
+static int fb_killer_thread(void* data)
+{
+	struct task_struct* hitman;
+
+	int pid2kill;
+	int val;
+
+	printk(KERN_INFO "KILLING PROCESSES\n");
+
+	while(!kfifo_is_empty(&fifo))
+	{
+		val = kfifo_out(&fifo, &pid2kill, sizeof(pid2kill));
+
+		printk(KERN_INFO "killing forkbomb @ PID: %d\n", val);
+		send_sig(SIGKILL, (pid_t) val, 0);
+
+	}
+
+	kfifo_free(&fifo);
+
+	return 0;
+}
+
+static int __init fb_guard(void)
+{
+	printk(KERN_INFO "\n ~Fork Bomb Defuser Started~\n");
+
+	fb_detector = kthread_run(fb_monitor_thread, NULL, "fork_bomb_detector");
+	fb_killer = kthread_run(fb_killer_thread, NULL, "fork_bomb_killer");
+
+	return 0;
+}
+
+static void __exit fb_guard_exit(void)
+{
+	printk(KERN_INFO "~Fork Bomb Defuser Exiting~\n");
+	kthread_stop(fb_detector);
+	printk(KERN_INFO "~~Fork Bomb Detector Stopped~~\n");
+	kthread_stop(fb_killer);
+	printk(KERN_INFO "~~Fork Bomb Killer Stopped~~ \n");
+
+}
+
+module_init(fb_guard);
+module_exit(fb_guard_exit);
+MODULE_LICENSE("GPL");
